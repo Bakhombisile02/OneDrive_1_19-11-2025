@@ -59,6 +59,17 @@ python3 assignment.py --flow siya
 ```
 *Runs Task 1, Task 2, then Siya's Task 3 (Nested CV) and Task 4 (Gender Models).*
 
+**Direct Stacey vs Siya comparison (conference mode):**
+```bash
+python3 assignment.py --comparison-mode --comparison-schemes Baseline MFCC_TQWT_Fusion
+```
+*Runs both Task 3 pipelines on identical grouped folds, logs runtime, saves fold-level predictions, and writes bootstrap + parametric significance tables to `results/comparison/`.*
+
+Useful flags:
+- `--comparison-folds`: override the number of grouped folds (default 5).
+- `--comparison-bootstrap`: control bootstrap iterations for significance tests (default 500; raised to ≥1000 when `--profile-comparison` is set).
+- `--profile-comparison`: capture deeper runtime stats and longer bootstrap runs for thesis-level reporting.
+
 ## 📂 Output Structure
 
 After running the script, check the `results/` folder. It is organized by task:

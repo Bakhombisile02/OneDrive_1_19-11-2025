@@ -30,12 +30,29 @@ def get_feature_schemes(df):
         "Wavelet": df.iloc[:, 140:322],
         "TQWT": df.iloc[:, 322:754]
     }
-    
-    # Fusion
-    mfcc = schemes["MFCC"].values
-    tqwt = schemes["TQWT"].values
-    schemes["MFCC_TQWT_Fusion"] = pd.DataFrame(np.hstack((mfcc, tqwt)))
-    
+
+    def _fuse(name, frames):
+        fused = np.hstack([f.values for f in frames])
+        n_cols = fused.shape[1]
+        columns = [f"{name}_f{i}" for i in range(n_cols)]
+        return pd.DataFrame(fused, columns=columns)
+
+    # Fusion views demanded by comparative analysis
+    schemes["MFCC_TQWT_Fusion"] = _fuse(
+        "mfcc_tqwt", [schemes["MFCC"], schemes["TQWT"]]
+    )
+    schemes["Intensity_Vocal_Fusion"] = _fuse(
+        "intensity_vocal", [
+            schemes["IntensityFormantBandwidth"],
+            schemes["VocalFold"],
+        ]
+    )
+
+    # All-features view keeps ordering consistent with downstream concatenations
+    feature_block = df.iloc[:, 2:754]
+    feature_block.columns = [f"feat_{i}" for i in range(feature_block.shape[1])]
+    schemes["AllFeatures"] = feature_block
+
     return schemes
 
 def standardize(X):

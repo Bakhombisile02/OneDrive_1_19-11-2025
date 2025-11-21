@@ -1,6 +1,11 @@
+import csv
+import os
+import platform
 import shutil
 import subprocess
+import time
 import warnings
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -22,7 +27,11 @@ from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
 from src.config import SEED
-from src.evaluation import compute_metrics, get_stratified_group_folds
+from src.evaluation import (
+    compare_metric_distributions,
+    compute_metrics,
+    get_stratified_group_folds,
+)
 from src.feature_selection import mrmr_rank
 from src.visualization import plot_pr_curves
 
@@ -249,17 +258,25 @@ def nested_cv_run(
     enhanced=False,
     ensemble_size=1,
     calibration_method=None,
+    outer_folds=None,
+    return_fold_details=False,
 ):
     print("\n--- Task 3: Nested Cross-Validation (Optimized) ---")
 
-    # Use StratifiedGroupKFold for outer loop
-    outer_folds = get_stratified_group_folds(X, y, subject_id, n_outer, seed)
+    if outer_folds is None:
+        outer_folds = get_stratified_group_folds(X, y, subject_id, n_outer, seed)
+    else:
+        outer_folds = np.asarray(outer_folds)
+        unique = np.unique(outer_folds)
+        if unique.size != n_outer:
+            n_outer = unique.size
 
     X = np.array(X)
     y = np.array(y)
     subject_id = np.array(subject_id)
 
     results = []
+    fold_details = []
 
     if k_list is None:
         k_list = [20, 50]
@@ -324,9 +341,11 @@ def nested_cv_run(
             },
         ]
 
-    for f in range(n_outer):
-        print(f"\nOUTER FOLD {f+1}/{n_outer}")
-        test_mask = outer_folds == f
+    unique_folds = sorted(np.unique(outer_folds))
+
+    for fold_idx, fold_val in enumerate(unique_folds):
+        print(f"\nOUTER FOLD {fold_idx+1}/{n_outer}")
+        test_mask = outer_folds == fold_val
         train_mask = ~test_mask
 
         if np.sum(test_mask) == 0:
@@ -443,13 +462,31 @@ def nested_cv_run(
             y_test_outer, y_prob
         )
 
+        y_pred = (y_prob >= tau_opt).astype(int)
+
         print(
-            f"  [Outer Fold {f+1}] AUPRC={auprc:.4f}, MCC={mcc_val:.4f}, "
+            f"  [Outer Fold {fold_idx+1}] AUPRC={auprc:.4f}, MCC={mcc_val:.4f}, "
             f"Opt Tau={tau_opt:.2f}"
         )
 
+        metrics = compute_metrics(y_test_outer, y_pred, y_prob)
+
+        fold_entry = {
+            'Fold': int(fold_idx + 1),
+            'OuterLabel': int(fold_val),
+            'Indices': np.where(test_mask)[0],
+            'Metrics': metrics,
+            'AUPRC': auprc,
+            'Scheme': None,
+            'Y_True': y_test_outer,
+            'Y_Prob': y_prob,
+            'Y_Pred': y_pred,
+            'Threshold': tau_opt,
+        }
+        fold_details.append(fold_entry)
+
         results.append({
-            "Fold": f+1,
+            "Fold": fold_idx+1,
             "Model": best_model_type,
             "k": best_k,
             "AUPRC": auprc,
@@ -460,19 +497,37 @@ def nested_cv_run(
             "Ensemble": config_summaries,
         })
 
+    if return_fold_details:
+        return results, fold_details
     return results
 
 
 # --- Task 3 & 4 Runners ---
 
-def run_task_3_stacey(X_all, y, subject_id, seed=SEED, output_dir="results"):
+def run_task_3_stacey(
+    X_all,
+    y,
+    subject_id,
+    seed=SEED,
+    output_dir="results",
+    fold_indices=None,
+    scheme_name="AllFeatures",
+    return_fold_details=False,
+):
     print("\n--- Task 3 (Stacey): MI + Elastic Net ---")
 
+    X_all = np.asarray(X_all)
+    y = np.asarray(y)
+    subject_id = np.asarray(subject_id)
+
     print("  Applying Mutual Information Filter (Top 150)...")
-    n_folds = 5
-    fold_indices = get_stratified_group_folds(
-        X_all, y, subject_id, n_folds, seed
-    )
+    if fold_indices is None:
+        fold_indices = get_stratified_group_folds(
+            X_all, y, subject_id, 5, seed
+        )
+    fold_indices = np.asarray(fold_indices)
+    unique_folds = sorted(np.unique(fold_indices))
+    n_folds = len(unique_folds)
 
     # Pipeline: Scaler -> MI (150) -> ElasticNet LR
     lr_pipeline = Pipeline([
@@ -498,13 +553,15 @@ def run_task_3_stacey(X_all, y, subject_id, seed=SEED, output_dir="results"):
     }
 
     results = []
+    all_fold_details = {}
 
     for name, model in models.items():
         print(f"  Evaluating {name}...")
         fold_metrics = []
         pr_results = []
+        fold_details = []
 
-        for fold in range(n_folds):
+        for fold in unique_folds:
             test_mask = fold_indices == fold
             train_mask = ~test_mask
 
@@ -530,6 +587,18 @@ def run_task_3_stacey(X_all, y, subject_id, seed=SEED, output_dir="results"):
                 'AUPRC': auprc
             })
 
+            fold_details.append({
+                'Fold': int(fold + 1),
+                'Indices': np.where(test_mask)[0],
+                'Metrics': metrics,
+                'AUPRC': auprc,
+                'Scheme': scheme_name,
+                'Y_True': y_test,
+                'Y_Prob': y_prob,
+                'Y_Pred': y_pred,
+                'PR_Curve': (recall, precision),
+            })
+
         avg_metrics = {
             k: np.mean([m[k] for m in fold_metrics])
             for k in fold_metrics[0]
@@ -544,10 +613,22 @@ def run_task_3_stacey(X_all, y, subject_id, seed=SEED, output_dir="results"):
         # Plot PR Curves
         plot_pr_curves(pr_results, title_prefix=f"Task 3 - {name}", save_dir=output_dir)
 
+        all_fold_details[name] = fold_details
+
+    if return_fold_details:
+        return pd.DataFrame(results), models, all_fold_details
     return pd.DataFrame(results), models
 
 
-def run_task_4_stacey(X_all, y, subject_id, trained_models_task3a):
+def run_task_4_stacey(
+    X_all,
+    y,
+    subject_id,
+    trained_models_task3a,
+    fold_indices=None,
+    scheme_name="AllFeatures",
+    return_fold_details=False,
+):
     print("\n--- Task 4 (Stacey): Soft Voting Ensemble ---")
 
     # Recreate pipelines for VotingClassifier
@@ -573,13 +654,20 @@ def run_task_4_stacey(X_all, y, subject_id, trained_models_task3a):
     )
 
     # Evaluate Ensemble
-    n_folds = 5
-    fold_indices = get_stratified_group_folds(
-        X_all, y, subject_id, n_folds, SEED
-    )
-    fold_metrics = []
+    X_all = np.asarray(X_all)
+    y = np.asarray(y)
+    subject_id = np.asarray(subject_id)
 
-    for fold in range(n_folds):
+    if fold_indices is None:
+        fold_indices = get_stratified_group_folds(
+            X_all, y, subject_id, 5, SEED
+        )
+    fold_indices = np.asarray(fold_indices)
+    unique_folds = sorted(np.unique(fold_indices))
+    fold_metrics = []
+    fold_details = []
+
+    for fold in unique_folds:
         test_mask = fold_indices == fold
         train_mask = ~test_mask
 
@@ -595,6 +683,15 @@ def run_task_4_stacey(X_all, y, subject_id, trained_models_task3a):
 
         metrics = compute_metrics(y_test, y_pred, y_prob)
         fold_metrics.append(metrics)
+        fold_details.append({
+            'Fold': int(fold + 1),
+            'Indices': np.where(test_mask)[0],
+            'Metrics': metrics,
+            'Scheme': scheme_name,
+            'Y_True': y_test,
+            'Y_Prob': y_prob,
+            'Y_Pred': y_pred,
+        })
 
     avg_metrics = {
         k: np.mean([m[k] for m in fold_metrics])
@@ -605,21 +702,50 @@ def run_task_4_stacey(X_all, y, subject_id, trained_models_task3a):
         f"F1={avg_metrics['F1']:.4f}, "
         f"Recall={avg_metrics['Sensitivity']:.4f}"
     )
+    if return_fold_details:
+        return avg_metrics, fold_details
     return avg_metrics
 
 
-def run_task_3_siya(schemes, y, df, output_dir="results", **siya_cv_kwargs):
+def run_task_3_siya(
+    schemes,
+    y,
+    df,
+    output_dir="results",
+    feature_matrix=None,
+    fold_indices=None,
+    return_fold_details=False,
+    **siya_cv_kwargs,
+):
     print("\n--- Task 3 (Siya): mRMR + Nested CV ---")
-    # Combine all features
-    X_all_np = np.hstack([X.values for X in schemes.values()])
+    if feature_matrix is not None:
+        X_all_np = np.asarray(feature_matrix)
+    elif schemes and "AllFeatures" in schemes:
+        X_all_np = schemes["AllFeatures"].values
+    else:
+        X_all_np = np.hstack([X.values for X in schemes.values()])
     subject_id = df.iloc[:, 0]
 
     # Run Nested CV
-    results = nested_cv_run(X_all_np, y, subject_id, **siya_cv_kwargs)
+    nested_output = nested_cv_run(
+        X_all_np,
+        y,
+        subject_id,
+        outer_folds=fold_indices,
+        return_fold_details=return_fold_details,
+        **siya_cv_kwargs,
+    )
+    if return_fold_details:
+        results, fold_details = nested_output
+    else:
+        results = nested_output
+        fold_details = None
     
     # Plot PR Curves
     plot_pr_curves(results, title_prefix="Task 3 (Siya) - Nested CV", save_dir=output_dir)
     
+    if return_fold_details:
+        return results, fold_details
     return results
 
 
@@ -664,3 +790,256 @@ def run_task_4_siya(X_all, y, df, seed=SEED, output_dir="results", **siya_cv_kwa
         plot_pr_curves(results_g, title_prefix=f"Task 4 (Siya) - Gender {g_val}", save_dir=output_dir)
 
     return results
+
+
+# --- Shared Comparison Utilities ---
+
+_RUNTIME_HEADERS = [
+    "timestamp",
+    "flow",
+    "task",
+    "scheme",
+    "model",
+    "runtime_sec",
+    "n_features",
+    "platform",
+    "python_version",
+    "cpu_count",
+    "cuda_available",
+]
+
+
+def _hardware_snapshot():
+    return {
+        "platform": platform.platform(),
+        "python_version": platform.python_version(),
+        "cpu_count": os.cpu_count(),
+        "cuda_available": detect_cuda_device(),
+    }
+
+
+def _append_runtime_log(path, entry):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    file_exists = os.path.exists(path)
+    with open(path, "a", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_RUNTIME_HEADERS)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(entry)
+
+
+def _fold_details_to_frame(fold_details, flow, scheme, subject_series):
+    if not fold_details:
+        return pd.DataFrame(columns=[
+            "flow", "scheme", "fold", "sample_index", "subject_id",
+            "y_true", "y_pred", "y_prob",
+        ])
+
+    records = []
+    subject_series = pd.Series(subject_series).reset_index(drop=True)
+    for detail in fold_details:
+        indices = detail.get('Indices', [])
+        y_true = np.asarray(detail.get('Y_True', []))
+        y_pred = np.asarray(detail.get('Y_Pred', []))
+        y_prob = np.asarray(detail.get('Y_Prob', []))
+        for pos, global_idx in enumerate(indices):
+            records.append({
+                "flow": flow,
+                "scheme": scheme,
+                "fold": int(detail.get('Fold', 0)),
+                "sample_index": int(global_idx),
+                "subject_id": subject_series.iloc[int(global_idx)],
+                "y_true": float(y_true[pos]) if y_true.size else np.nan,
+                "y_pred": int(y_pred[pos]) if y_pred.size else np.nan,
+                "y_prob": float(y_prob[pos]) if y_prob.size else np.nan,
+            })
+    return pd.DataFrame.from_records(records)
+
+
+def _extract_metric_map(fold_details, metric_name):
+    mapping = {}
+    for detail in fold_details:
+        fold_id = int(detail.get('Fold', 0))
+        if metric_name.upper() == 'AUPRC':
+            value = detail.get('AUPRC')
+        else:
+            metrics = detail.get('Metrics', {})
+            value = metrics.get(metric_name)
+        if value is not None:
+            mapping[fold_id] = value
+    return mapping
+
+
+def _aligned_metric_arrays(details_a, details_b, metric_name):
+    map_a = _extract_metric_map(details_a, metric_name)
+    map_b = _extract_metric_map(details_b, metric_name)
+    shared = sorted(set(map_a) & set(map_b))
+    if not shared:
+        return np.array([]), np.array([])
+    return (
+        np.array([map_a[f] for f in shared], dtype=float),
+        np.array([map_b[f] for f in shared], dtype=float),
+    )
+
+
+def _flatten_significance_record(scheme, report):
+    boot = report['bootstrap']
+    param = report['parametric']
+    return {
+        'scheme': scheme,
+        'metric': report['metric'],
+        'bootstrap_diff': boot['diff_mean'],
+        'bootstrap_ci_low': boot['ci_low'],
+        'bootstrap_ci_high': boot['ci_high'],
+        'bootstrap_p': boot['p_value'],
+        'parametric_p': param['p_value'],
+        'parametric_t_stat': param['t_stat'],
+        'parametric_shapiro_p': param['shapiro_p'],
+        'parametric_assumption_ok': param['assumption_ok'],
+    }
+
+
+def run_shared_comparison(
+    schemes,
+    y,
+    df,
+    stacey_model='LogisticRegression_ElasticNet',
+    siya_options=None,
+    comparison_config=None,
+):
+    """Run Stacey and Siya flows on identical folds/feature views."""
+    siya_options = siya_options or {}
+    comparison_config = comparison_config or {}
+
+    output_dir = comparison_config.get('output_dir', os.path.join('results', 'comparison'))
+    os.makedirs(output_dir, exist_ok=True)
+    preds_dir = os.path.join(output_dir, 'predictions')
+    os.makedirs(preds_dir, exist_ok=True)
+    significance_dir = os.path.join(output_dir, 'significance')
+    os.makedirs(significance_dir, exist_ok=True)
+    runtime_log_path = os.path.join(output_dir, 'runtime_log.csv')
+    folds_path = os.path.join(output_dir, 'folds.npy')
+
+    subject_series = df.iloc[:, 0].reset_index(drop=True)
+    y_series = pd.Series(y).reset_index(drop=True)
+    seed = comparison_config.get('seed', SEED)
+    n_folds = comparison_config.get('n_folds', 5)
+
+    base_matrix = schemes.get('AllFeatures')
+    if base_matrix is None:
+        base_matrix = pd.DataFrame(np.hstack([X.values for X in schemes.values()]))
+    fold_indices = get_stratified_group_folds(
+        base_matrix.values,
+        y_series.values,
+        subject_series.values,
+        n_folds,
+        seed,
+    )
+    np.save(folds_path, fold_indices)
+
+    selected_schemes = comparison_config.get('schemes') or list(schemes.keys())
+    prediction_frames = []
+    significance_records = []
+
+    for scheme_name in selected_schemes:
+        if scheme_name not in schemes:
+            continue
+        X_df = schemes[scheme_name]
+        X_np = X_df.values
+        n_features = X_np.shape[1]
+
+        start = time.perf_counter()
+        stacey_results, _, stacey_detail_map = run_task_3_stacey(
+            X_np,
+            y_series.values,
+            subject_series.values,
+            seed=seed,
+            output_dir=output_dir,
+            fold_indices=fold_indices,
+            scheme_name=scheme_name,
+            return_fold_details=True,
+        )
+        stacey_runtime = time.perf_counter() - start
+        chosen_model = stacey_model if stacey_model in stacey_detail_map else next(iter(stacey_detail_map))
+        stacey_details = stacey_detail_map.get(chosen_model, [])
+
+        runtime_entry = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'flow': 'stacey',
+            'task': 'Task3',
+            'scheme': scheme_name,
+            'model': chosen_model,
+            'runtime_sec': round(stacey_runtime, 4),
+            'n_features': n_features,
+        }
+        runtime_entry.update(_hardware_snapshot())
+        _append_runtime_log(runtime_log_path, runtime_entry)
+
+        start = time.perf_counter()
+        siya_output = run_task_3_siya(
+            {scheme_name: X_df},
+            y_series.values,
+            df,
+            output_dir=output_dir,
+            feature_matrix=X_np,
+            fold_indices=fold_indices,
+            return_fold_details=True,
+            **siya_options,
+        )
+        siya_results, siya_details = siya_output
+        siya_runtime = time.perf_counter() - start
+        runtime_entry = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'flow': 'siya',
+            'task': 'Task3',
+            'scheme': scheme_name,
+            'model': 'NestedCV',
+            'runtime_sec': round(siya_runtime, 4),
+            'n_features': n_features,
+        }
+        runtime_entry.update(_hardware_snapshot())
+        _append_runtime_log(runtime_log_path, runtime_entry)
+
+        prediction_frames.append(
+            _fold_details_to_frame(stacey_details, 'stacey', scheme_name, subject_series)
+        )
+        prediction_frames.append(
+            _fold_details_to_frame(siya_details, 'siya', scheme_name, subject_series)
+        )
+
+        mcc_a, mcc_b = _aligned_metric_arrays(stacey_details, siya_details, 'MCC')
+        if mcc_a.size and mcc_b.size:
+            report = compare_metric_distributions(
+                mcc_a,
+                mcc_b,
+                metric_name='MCC',
+                n_boot=comparison_config.get('n_boot', 500),
+            )
+            significance_records.append(_flatten_significance_record(scheme_name, report))
+
+        auprc_a, auprc_b = _aligned_metric_arrays(stacey_details, siya_details, 'AUPRC')
+        if auprc_a.size and auprc_b.size:
+            report = compare_metric_distributions(
+                auprc_a,
+                auprc_b,
+                metric_name='AUPRC',
+                n_boot=comparison_config.get('n_boot', 500),
+            )
+            significance_records.append(_flatten_significance_record(scheme_name, report))
+
+    if prediction_frames:
+        preds_df = pd.concat(prediction_frames, ignore_index=True)
+        preds_path = os.path.join(preds_dir, 'task3_predictions.csv')
+        preds_df.to_csv(preds_path, index=False)
+
+    if significance_records:
+        sig_df = pd.DataFrame(significance_records)
+        sig_path = os.path.join(significance_dir, 'task3_significance.csv')
+        sig_df.to_csv(sig_path, index=False)
+
+    return {
+        'folds_path': folds_path,
+        'runtime_log': runtime_log_path,
+        'predictions_path': os.path.join(preds_dir, 'task3_predictions.csv') if prediction_frames else None,
+        'significance_path': os.path.join(significance_dir, 'task3_significance.csv') if significance_records else None,
+    }

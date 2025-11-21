@@ -3,6 +3,11 @@ set -e
 
 echo "Running smoke test..."
 
+echo "1) Stacey flow"
+python3 assignment.py --flow stacey
+
+echo "2) Siya flow (reduced folds)"
+
 # Run with minimal folds and features for speed
 python3 assignment.py \
     --flow siya \

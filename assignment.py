@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import os
 import warnings
-from src.config import DATA_PATH
+from src.config import DATA_PATH, SEED
 from src.data import load_data
 from src.visualization import (
     run_task_1,
@@ -15,7 +15,8 @@ from src.training import (
     run_task_3_stacey,
     run_task_4_stacey,
     run_task_3_siya,
-    run_task_4_siya
+    run_task_4_siya,
+    run_shared_comparison,
 )
 
 # warnings.filterwarnings('ignore')
@@ -78,6 +79,33 @@ def parse_args():
         action="store_true",
         help="Enable Siya enhanced mode (broader grid, ensembles, calibration).",
     )
+    parser.add_argument(
+        "--comparison-mode",
+        action="store_true",
+        help="Run shared comparison harness so Stacey and Siya flows share folds and metrics.",
+    )
+    parser.add_argument(
+        "--comparison-schemes",
+        nargs="+",
+        help="Optional subset of feature schemes to include in comparison mode.",
+    )
+    parser.add_argument(
+        "--comparison-folds",
+        type=int,
+        default=5,
+        help="Number of grouped folds for the shared comparison harness.",
+    )
+    parser.add_argument(
+        "--comparison-bootstrap",
+        type=int,
+        default=500,
+        help="Bootstrap samples for comparison-mode significance tests.",
+    )
+    parser.add_argument(
+        "--profile-comparison",
+        action="store_true",
+        help="Increase bootstrap iterations and enable heavier logging in comparison mode.",
+    )
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -90,7 +118,8 @@ if __name__ == "__main__":
         "task3_stacey": "results/task3_stacey",
         "task3_siya": "results/task3_siya",
         "task4_stacey": "results/task4_stacey",
-        "task4_siya": "results/task4_siya"
+        "task4_siya": "results/task4_siya",
+        "comparison": "results/comparison",
     }
     
     for d in results_dirs.values():
@@ -109,8 +138,20 @@ if __name__ == "__main__":
     task2_results.to_csv(os.path.join(results_dirs["task2"], "task2_results.csv"), index=False)
     
     # Prepare shared resources for Task 3 & 4 flows
-    X_all_np = np.hstack([X.values for X in schemes.values()])
+    if "AllFeatures" in schemes:
+        X_all_np = schemes["AllFeatures"].values
+    else:
+        X_all_np = np.hstack([X.values for X in schemes.values()])
     subject_id = df.iloc[:, 0]
+    parallel_flag = args.siya_parallel_configs or (args.siya_device != "cpu")
+    siya_options = {
+        'n_outer': args.siya_outer_folds,
+        'n_inner': args.siya_inner_folds,
+        'k_list': args.siya_k,
+        'device_preference': args.siya_device,
+        'parallel_configs': parallel_flag,
+        'enhanced': args.siya_enhanced,
+    }
 
     if args.flow in ("stacey", "both"):
         task3_stacey_results, task4_stacey_results = run_stacey_flow(
@@ -125,15 +166,6 @@ if __name__ == "__main__":
         print(f"\n[Saved] Stacey's results saved to {results_dirs['task3_stacey']} and {results_dirs['task4_stacey']}")
 
     if args.flow in ("siya", "both"):
-        parallel_flag = args.siya_parallel_configs or (args.siya_device != "cpu")
-        siya_options = {
-            'n_outer': args.siya_outer_folds,
-            'n_inner': args.siya_inner_folds,
-            'k_list': args.siya_k,
-            'device_preference': args.siya_device,
-            'parallel_configs': parallel_flag,
-            'enhanced': args.siya_enhanced,
-        }
         task3_siya_results, task4_siya_results = run_siya_flow(
             schemes,
             y,
@@ -152,3 +184,23 @@ if __name__ == "__main__":
             pd.DataFrame(res_list).to_csv(os.path.join(results_dirs["task4_siya"], f"siya_task4_gender_{gender}_results.csv"), index=False)
             
         print(f"\n[Saved] Siya's results saved to {results_dirs['task3_siya']} and {results_dirs['task4_siya']}")
+
+        if args.comparison_mode:
+            comparison_bootstrap = args.comparison_bootstrap
+            if args.profile_comparison:
+                comparison_bootstrap = max(comparison_bootstrap, 1000)
+            comparison_config = {
+                'output_dir': results_dirs['comparison'],
+                'schemes': args.comparison_schemes,
+                'n_folds': args.comparison_folds,
+                'n_boot': comparison_bootstrap,
+                'seed': SEED,
+            }
+            comparison_artifacts = run_shared_comparison(
+                schemes,
+                y,
+                df,
+                siya_options=siya_options,
+                comparison_config=comparison_config,
+            )
+            print(f"\n[Comparison] Artifacts: {comparison_artifacts}")
