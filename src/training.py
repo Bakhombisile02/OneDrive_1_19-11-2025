@@ -24,6 +24,7 @@ from sklearn.tree import DecisionTreeClassifier
 from src.config import SEED
 from src.evaluation import compute_metrics, get_stratified_group_folds
 from src.feature_selection import mrmr_rank
+from src.visualization import plot_pr_curves
 
 # --- XGBoost Setup ---
 try:
@@ -87,7 +88,7 @@ def evaluate_all_schemes(X_schemes, y, subject_id, n_folds=5, seed=SEED):
         ]),
         "KNN": Pipeline([
             ('scaler', StandardScaler()),
-            ('clf', KNeighborsClassifier(n_neighbors=5))
+            ('clf', KNeighborsClassifier(n_neighbors=5, algorithm='kd_tree', n_jobs=1))
         ])
     }
 
@@ -464,7 +465,7 @@ def nested_cv_run(
 
 # --- Task 3 & 4 Runners ---
 
-def run_task_3_stacey(X_all, y, subject_id, seed=SEED):
+def run_task_3_stacey(X_all, y, subject_id, seed=SEED, output_dir="results"):
     print("\n--- Task 3 (Stacey): MI + Elastic Net ---")
 
     print("  Applying Mutual Information Filter (Top 150)...")
@@ -501,6 +502,7 @@ def run_task_3_stacey(X_all, y, subject_id, seed=SEED):
     for name, model in models.items():
         print(f"  Evaluating {name}...")
         fold_metrics = []
+        pr_results = []
 
         for fold in range(n_folds):
             test_mask = fold_indices == fold
@@ -518,6 +520,15 @@ def run_task_3_stacey(X_all, y, subject_id, seed=SEED):
 
             metrics = compute_metrics(y_test, y_pred, y_prob)
             fold_metrics.append(metrics)
+            
+            # Compute PR Curve
+            precision, recall, _ = precision_recall_curve(y_test, y_prob)
+            auprc = auc(recall, precision)
+            pr_results.append({
+                'Fold': fold + 1,
+                'PR_Curve': (recall, precision),
+                'AUPRC': auprc
+            })
 
         avg_metrics = {
             k: np.mean([m[k] for m in fold_metrics])
@@ -529,6 +540,9 @@ def run_task_3_stacey(X_all, y, subject_id, seed=SEED):
             f"Recall={avg_metrics['Sensitivity']:.4f}"
         )
         results.append({'Model': name, **avg_metrics})
+        
+        # Plot PR Curves
+        plot_pr_curves(pr_results, title_prefix=f"Task 3 - {name}", save_dir=output_dir)
 
     return pd.DataFrame(results), models
 
@@ -594,7 +608,7 @@ def run_task_4_stacey(X_all, y, subject_id, trained_models_task3a):
     return avg_metrics
 
 
-def run_task_3_siya(schemes, y, df, **siya_cv_kwargs):
+def run_task_3_siya(schemes, y, df, output_dir="results", **siya_cv_kwargs):
     print("\n--- Task 3 (Siya): mRMR + Nested CV ---")
     # Combine all features
     X_all_np = np.hstack([X.values for X in schemes.values()])
@@ -602,10 +616,14 @@ def run_task_3_siya(schemes, y, df, **siya_cv_kwargs):
 
     # Run Nested CV
     results = nested_cv_run(X_all_np, y, subject_id, **siya_cv_kwargs)
+    
+    # Plot PR Curves
+    plot_pr_curves(results, title_prefix="Task 3 (Siya) - Nested CV", save_dir=output_dir)
+    
     return results
 
 
-def run_task_4_siya(X_all, y, df, **siya_cv_kwargs):
+def run_task_4_siya(X_all, y, df, seed=SEED, output_dir="results", **siya_cv_kwargs):
     print("\n--- Task 4 (Siya): Gender-Specific Models ---")
     subject_id = df.iloc[:, 0]
     gender = df.iloc[:, 1]
@@ -630,7 +648,7 @@ def run_task_4_siya(X_all, y, df, **siya_cv_kwargs):
             X_g,
             y_g,
             subj_g,
-            seed=SEED,
+            seed=seed,
             **siya_cv_kwargs,
         )
 
@@ -641,5 +659,8 @@ def run_task_4_siya(X_all, y, df, **siya_cv_kwargs):
             f"Mean MCC={avg_mcc:.4f}"
         )
         results[g_val] = results_g
+        
+        # Plot PR Curves
+        plot_pr_curves(results_g, title_prefix=f"Task 4 (Siya) - Gender {g_val}", save_dir=output_dir)
 
     return results
