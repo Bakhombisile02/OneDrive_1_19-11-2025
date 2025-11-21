@@ -1,106 +1,95 @@
-# INFO411 Assignment 2: Parkinson's Disease Detection
+# INFO411 Assignment 2: Parkinson's Disease Detection (Python Port)
 
-This project implements a machine learning pipeline for detecting Parkinson's Disease from speech features. It includes data visualization, baseline modeling, feature selection (mRMR), and advanced nested cross-validation with ensemble methods.
+**Welcome Ryan and Stacey!** 👋
 
-## 🚨 Update for Ryan and Stacy
+This repository is the Python implementation of our Assignment 2 workflow. It replaces the legacy Julia notebooks (`A2_*.jl`) with a modular, production-ready Python pipeline.
 
-We have performed a major code review and refactoring to improve maintainability and testing.
+If you are used to the Julia notebooks, this guide will help you navigate the new structure.
 
-*   **Where is `src/modeling.py`?**
-    It has been split into two files to separate concerns:
-    *   `src/feature_selection.py`: Contains `mrmr_rank` and discretization logic.
-    *   `src/training.py`: Contains all model pipelines, `nested_cv_run`, and task runners (`run_task_2`, `run_task_3_stacey`, etc.).
-*   **New Tests**: We now have a `tests/` directory. Please run tests before pushing changes.
-*   **Dependencies**: `requirements.txt` now uses pinned versions for reproducibility.
+## 🗺️ Migration Guide: From Julia to Python
 
-## Project Structure
+We have ported all logic from the Julia notebooks into a structured Python package (`src/`).
+
+| Legacy Julia Notebook | New Python Location | Description |
+| :--- | :--- | :--- |
+| `A2_Task_1_and_2_Ryan_Teo.jl` | `src/visualization.py` | **Task 1**: PCA, t-SNE, Isomap, and Fisher Ratio analysis. |
+| `A2_Task_1_and_2_Ryan_Teo.jl` | `src/training.py` (Task 2) | **Task 2**: Baseline classification (DT, SVM, KNN) on all feature schemes. |
+| `A2_StaceyFu_Task3_and_4.jl` | `src/training.py` (Task 3/4) | **Task 3 & 4 (Stacey)**: MI Feature Selection + Elastic Net & Voting Ensemble. |
+| `A2-Bakhombisile_Dlamini...jl` | `src/training.py` (Task 3/4) | **Task 3 & 4 (Siya)**: mRMR Feature Selection + Nested CV + Gender-specific models. |
+
+### Key Changes
+1.  **No more Notebooks**: We use a single script `assignment.py` to run everything.
+2.  **Modular Code**:
+    *   `src/data.py`: Handles loading the CSV and splitting feature schemes (Baseline, MFCC, etc.).
+    *   `src/visualization.py`: Handles all plotting (Task 1).
+    *   `src/training.py`: Handles all model training and cross-validation (Tasks 2, 3, 4).
+3.  **Results Folder**: All plots and CSVs are automatically saved to `results/` organized by task.
+
+## 🚀 How to Run
+
+You don't need to open multiple files anymore. Just run the main script.
+
+### 1. Setup Environment
+First, install the required Python libraries:
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Run the Full Pipeline
+To run **everything** (Task 1 Visualizations, Task 2 Baselines, Task 3/4 Stacey's Flow, and Task 3/4 Siya's Flow):
+
+```bash
+python3 assignment.py --flow both
+```
+
+*Note: On macOS, this script automatically handles the OpenBLAS/Matplotlib crash issues we were seeing.*
+
+### 3. Run Specific Parts
+If you only want to check your specific sections:
+
+**For Stacey:**
+```bash
+python3 assignment.py --flow stacey
+```
+*Runs Task 1, Task 2, then Stacey's Task 3 (Elastic Net) and Task 4 (Ensemble).*
+
+**For Siya:**
+```bash
+python3 assignment.py --flow siya
+```
+*Runs Task 1, Task 2, then Siya's Task 3 (Nested CV) and Task 4 (Gender Models).*
+
+## 📂 Output Structure
+
+After running the script, check the `results/` folder. It is organized by task:
 
 ```text
-.
-├── assignment.py           # Main entry point
-├── download_data.py        # Data downloader script
-├── requirements.txt        # Pinned dependencies
-├── src/
-│   ├── config.py           # Configuration (Env vars)
-│   ├── data.py             # Data loading & preprocessing
-│   ├── evaluation.py       # Metrics & CV splitting
-│   ├── feature_selection.py# mRMR & discretization (Refactored)
-│   ├── training.py         # Model training & Task runners (Refactored)
-│   └── visualization.py    # PCA, t-SNE, Fisher Ratio
-├── tests/                  # Unit tests (New!)
-└── data/                   # Dataset storage
+results/
+├── task1/
+│   └── separability_comparison.png      # Fisher Ratio Bar Chart
+├── task2/
+│   ├── task2_performance.png            # Model Comparison Plot
+│   └── task2_results.csv                # Raw Accuracy/F1 scores
+├── task3_stacey/
+│   ├── stacey_task3_results.csv
+│   └── Task_3_-_LogisticRegression...   # PR Curves
+├── task4_stacey/
+│   └── stacey_task4_results.csv
+├── task3_siya/
+│   └── ...                              # Nested CV Results & Plots
+└── task4_siya/
+    └── ...                              # Gender Specific Results & Plots
 ```
 
-## Setup
+## 🛠️ Developer Notes
 
-1.  **Install Dependencies**:
+*   **Tests**: We added unit tests! Run `pytest` to check if the feature selection and evaluation logic is working correctly.
+*   **Refactoring**: `src/modeling.py` was getting too big, so we split it into `src/training.py` (models) and `src/feature_selection.py` (mRMR).
+
+## 🐛 Troubleshooting
+
+*   **"Bus Error" or "Segmentation Fault" on Mac**:
+    We have added fixes for this in the code. If it persists, try running with:
     ```bash
-    pip install -r requirements.txt
+    OMP_NUM_THREADS=1 python3 assignment.py --flow both
     ```
-
-2.  **Download Data**:
-    ```bash
-    python download_data.py
-    ```
-
-## Configuration
-
-You can configure the project using environment variables (optional).
-
-*   `DATA_PATH`: Path to the CSV file (default: `data/Parkinsons_Speech-Features.csv`)
-*   `SEED`: Random seed for reproducibility (default: `42`)
-
-Example:
-```bash
-export SEED=123
-python assignment.py
-```
-
-## Running the Analysis
-
-Run the full pipeline (Tasks 1-4):
-
-```bash
-python assignment.py --flow both
-```
-
-Run specific flows:
-
-```bash
-# Run only Stacey's pipeline (Task 3a/4a)
-python assignment.py --flow stacey
-
-# Or use the convenience script:
-./run_stacey.sh
-
-# Run only Siya's pipeline (Task 3b/4b)
-python assignment.py --flow siya
-```
-
-### Outputs
-
-Results are saved to the `results/` directory:
-*   `stacey_task3_results.csv`: Metrics for Logistic Regression vs Random Forest.
-*   `stacey_task4_results.csv`: Metrics for the Soft Voting Ensemble.
-
-### CLI Options
-
-*   `--siya-device [auto|cpu]`: Force CPU usage or allow auto-detection of GPU (CUDA/Metal).
-*   `--siya-enhanced`: Enable broader hyperparameter grids and calibration.
-*   `--siya-parallel-configs`: Parallelize inner CV loops (memory intensive).
-
-## Testing
-
-We use `pytest` for unit testing.
-
-**Run all tests:**
-```bash
-python -m pytest tests/
-```
-
-**Run specific test file:**
-```bash
-python -m pytest tests/test_feature_selection.py
-```
-
-Please ensure all tests pass before submitting changes.
